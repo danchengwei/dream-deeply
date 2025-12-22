@@ -49,7 +49,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
           ...prev,
           description: turn.description,
           options: turn.options,
-          history: [{ role: 'model', text: turn.description }],
+          history: [{ role: 'model' as const, text: turn.description }],
           isLoading: false,
           isEnded: turn.isEnded || false,
           report: turn.report
@@ -95,16 +95,16 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
     setCustomInput('');
 
     try {
-      const newHistory = [...simState.history, { role: 'user', text: actionText }];
+      const newHistory: { role: 'user' | 'model'; text: string }[] = [...simState.history, { role: 'user', text: actionText }];
       const context = customTopic || ""; 
       
-      const turn = await generateSimulationTurn(newHistory as any, context, actionText);
+      const turn = await generateSimulationTurn(newHistory, context, actionText);
 
       setSimState(prev => ({
         ...prev,
         description: turn.description,
         options: turn.options || [],
-        history: [...newHistory, { role: 'model', text: turn.description }],
+        history: [...newHistory, { role: 'model' as const, text: turn.description }],
         isLoading: false,
         isEnded: turn.isEnded,
         report: turn.report

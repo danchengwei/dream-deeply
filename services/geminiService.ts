@@ -110,21 +110,13 @@ export const generateSimulationTurn = async (
  */
 export const generateSimulationImage = async (description: string): Promise<string | null> => {
   try {
-    const prompt = `
-      First-person perspective or cinematic shot, photorealistic or high-quality illustration.
-      Scene description: ${description}.
-      Atmospheric, detailed, educational context. 
-      Lighting and mood should match the scene (e.g. dark and ominous for dungeons, bright for labs).
-      Do not include text in the image.
-    `;
+    // Simplified prompt for speed and reliability
+    const prompt = `Digital art, highly detailed, cinematic lighting. Scene: ${description}`;
 
     const response = await ai.models.generateContent({
       model: IMAGE_MODEL,
       contents: prompt,
-      config: {
-        // We do not set responseMimeType for image generation models usually, 
-        // relying on parsing the parts.
-      }
+      config: {}
     });
 
     // Iterate parts to find the image
@@ -196,23 +188,16 @@ export const generateDebateResponse = async (
  */
 export const initializeStoryRole = async (theme: string): Promise<{role: string, visualPrompt: string}> => {
   const systemPrompt = `
-    你是一个角色扮演游戏设定生成器。
-    根据用户提供的主题，为用户生成一个具体的角色身份（Role）和一个用于生成该角色头像的英文提示词（Visual Prompt）。
-    
-    角色身份应具体，例如：
-    - 主题：切尔诺贝利 -> 身份：核电站值班工程师
-    - 主题：赛博朋克 -> 身份：义体维修师
-    - 主题：庄园 -> 身份：私家侦探
-    
-    Visual Prompt 必须是生成"正方形头像（Square Portrait）"的描述，风格为"Digital Art"或"Oil Painting"，聚焦于面部特征。
-    
-    输出 JSON: { "role": "身份名称", "visualPrompt": "Detailed english description of the character's face..." }
+    你是一个RPG设定生成器。
+    根据主题"${theme}"，生成角色(Role)和头像提示词(Visual Prompt)。
+    Visual Prompt 必须简短、英文、描述面部特征、风格为Digital Art。
+    输出 JSON: { "role": "string", "visualPrompt": "string" }
   `;
   
   try {
     const response = await ai.models.generateContent({
       model: TEXT_MODEL,
-      contents: `主题: ${theme}`,
+      contents: "Start",
       config: {
         systemInstruction: systemPrompt,
         responseMimeType: "application/json",
@@ -232,7 +217,7 @@ export const initializeStoryRole = async (theme: string): Promise<{role: string,
     return JSON.parse(text.replace(/```json\n?|```/g, '').trim());
   } catch (error) {
     console.error("Role Init Error:", error);
-    return { role: "探险家", visualPrompt: "A mysterious explorer with a hood, digital art style" };
+    return { role: "探险家", visualPrompt: "Explorer face, mysterious, digital art" };
   }
 };
 
@@ -250,22 +235,17 @@ export const generateStoryScene = async (
   interactables: StoryInteractable[];
 }> => {
   const systemPrompt = `
-    你是一个"点击解密游戏"（Point-and-Click Adventure）的后端引擎。
-    当前主题：${theme}。
-    玩家角色：${role}。
+    你是一个解密游戏引擎。主题：${theme}，角色：${role}。
     
     任务：
-    1. 根据历史记录和用户动作，生成下一个场景。
-    2. 生成 "narrative"：使用**第一人称**（"我..."）进行叙述，或者像RPG对话框一样描述当前发生的事情。重点描写环境氛围。
-    3. 生成 "visualPrompt"：场景背景图的英文提示词（第一人称视角）。
-    4. 生成 "interactables"：**必须**生成 1 到 3 个可互动的物体。这些是推进剧情的关键。
-       - type: 'EXAMINE' (查看), 'PICKUP' (收集), 'TRANSITION' (移动).
-       - description: 点击后发生的后果。
+    1. 根据历史和动作生成下一段简短剧情(narrative)。
+    2. 生成场景图片提示词(visualPrompt)：英文，简短直接，描述环境。
+    3. 生成1-3个互动点(interactables)。
     
-    约束：确保 narrative 不会太长（100字左右），适合对话框阅读。
+    输出 JSON。
   `;
 
-  const prompt = `历史剧情:\n${history.slice(-3).join('\n')}\n\n玩家动作: ${action}`;
+  const prompt = `历史:\n${history.slice(-2).join('\n')}\n动作: ${action}`;
 
   try {
     const response = await ai.models.generateContent({
@@ -306,10 +286,10 @@ export const generateStoryScene = async (
   } catch (error) {
     console.error("Story Gen Error:", error);
     return {
-      narrative: "周围一片漆黑，某种力量似乎干扰了你的感知...但我必须找到出路。",
-      visualPrompt: "Dark abstract void, glitched reality, mysterious atmosphere",
+      narrative: "信号受到干扰...",
+      visualPrompt: "Glitch art, static noise, abstract",
       interactables: [
-        { id: 'retry', label: '尝试集中注意力', type: 'EXAMINE', description: '试图看清周围...' }
+        { id: 'retry', label: '重试', type: 'EXAMINE', description: '尝试重新连接' }
       ]
     };
   }

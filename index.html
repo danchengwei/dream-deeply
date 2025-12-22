@@ -35,6 +35,7 @@
               'spin-reverse-slower': 'spinReverse 30s linear infinite',
               'twinkle': 'twinkle 3s ease-in-out infinite',
               'gradient-xy': 'gradientXY 15s ease infinite',
+              'jump': 'jump 2s ease-in-out infinite',
             },
             keyframes: {
               fadeIn: {
@@ -56,6 +57,10 @@
               float: {
                 '0%, 100%': { transform: 'translateY(0)' },
                 '50%': { transform: 'translateY(-20px)' },
+              },
+              jump: {
+                '0%, 100%': { transform: 'translateY(0)' },
+                '50%': { transform: 'translateY(-80px)' },
               },
               spinReverse: {
                 '0%': { transform: 'rotate(360deg)' },
