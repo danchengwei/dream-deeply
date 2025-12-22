@@ -1,5 +1,5 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, Content } from "@google/genai";
 import { DebatePersona, AnalysisReport, StoryInteractable } from '../types';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -9,7 +9,23 @@ const TEXT_MODEL = 'gemini-3-flash-preview';
 const IMAGE_MODEL = 'gemini-2.5-flash-image'; 
 
 /**
+ * DATABASE / SEARCH INFRASTRUCTURE (Backup Plan / Optimization)
+ */
+const DB_SEARCH_ENABLED = false; 
+
+const searchImageDatabase = async (prompt: string): Promise<string | null> => {
+  if (!DB_SEARCH_ENABLED) return null;
+  return null;
+};
+
+const uploadImageToDatabase = async (prompt: string, imageBase64: string): Promise<void> => {
+  // Placeholder implementation
+};
+
+
+/**
  * Generates the next turn in a text-based adventure/simulation.
+ * Enhanced with robust JSON parsing and fallback mechanisms.
  */
 export const generateSimulationTurn = async (
   history: { role: 'user' | 'model'; text: string }[],
@@ -27,37 +43,30 @@ export const generateSimulationTurn = async (
     背景设定: ${context}。
     
     你的任务：
-    1. 根据"用户行动"（User Action）推进场景。用户的输入可能是选择预设选项，也可能是完全自定义的文本输入。
-    2. 如果是自定义输入，请结合当前物理/历史/化学背景判断其合理性和后果。如果行为不合逻辑或不可能，请描述尝试失败的后果。
-    3. 渲染环境气氛、感官细节和教育背景。
-    4. 判断模拟是否应该结束（isEnded）。结束条件包括：用户达成目标、用户死亡/遭受重大失败、或历史事件完结。
-    5. 如果模拟结束（isEnded = true），必须生成一份分析报告（analysisReport），且"options"字段留空。
-    6. 如果模拟未结束，提供 3 个建议的行动选项（options）。
+    1. 根据"用户行动"（User Action）推进场景。
+    2. 严格遵守JSON输出格式，不要输出任何Markdown标记或额外文本。
+    3. 判断模拟是否应该结束（isEnded）。
+    4. 如果模拟未结束，必须提供 3 个建议的行动选项（options）。
     
     请使用简体中文回复。
-
-    输出 JSON 格式:
-    {
-      "description": "对结果的生动叙述。",
-      "options": ["选项1", "选项2", "选项3"], // 仅在 isEnded 为 false 时提供
-      "isEnded": boolean, // 是否结束
-      "report": { // 仅在 isEnded 为 true 时提供
-         "score": number, // 0-100分，基于用户的决策质量
-         "evaluation": "对用户整体表现的评价",
-         "keyLearnings": ["学到的知识点1", "学到的知识点2"],
-         "suggestions": "改进建议"
-      }
-    }
   `;
 
-  // Convert simple history to prompt format
-  let promptHistory = history.map(h => `${h.role === 'user' ? '用户' : '系统'}: ${h.text}`).join('\n');
-  const fullPrompt = `${promptHistory}\n用户行动: ${userAction}`;
+  // Convert history to proper Content format for better context handling
+  const contents = history.map(h => ({
+    role: h.role === 'user' ? 'user' : 'model',
+    parts: [{ text: h.text }]
+  }));
+  
+  // Add the current user action
+  contents.push({
+    role: 'user',
+    parts: [{ text: `用户行动: ${userAction}` }]
+  });
 
   try {
     const response = await ai.models.generateContent({
       model: TEXT_MODEL,
-      contents: fullPrompt,
+      contents: contents,
       config: {
         systemInstruction: systemPrompt,
         responseMimeType: "application/json",
@@ -91,10 +100,24 @@ export const generateSimulationTurn = async (
     const text = response.text;
     if (!text) throw new Error("No response from AI");
     
-    // Clean up markdown code blocks if present (e.g. ```json ... ```)
-    const cleanedText = text.replace(/```json\n?|```/g, '').trim();
+    // Robust JSON Parsing
+    let parsedData;
+    try {
+        // Attempt to clean markdown code blocks if they slip through
+        const cleanedText = text.replace(/```json\n?|```/g, '').trim();
+        parsedData = JSON.parse(cleanedText);
+    } catch (jsonError) {
+        console.warn("JSON Parse Failed, attempting fallback", jsonError);
+        // Fallback for malformed JSON
+        return {
+            description: "系统正在重新校准数据流... (解析错误)",
+            options: ["继续"],
+            isEnded: false
+        };
+    }
 
-    return JSON.parse(cleanedText);
+    return parsedData;
+
   } catch (error) {
     console.error("Simulation Error:", error);
     return {
@@ -109,9 +132,11 @@ export const generateSimulationTurn = async (
  * Generates a visual representation of the current simulation state.
  */
 export const generateSimulationImage = async (description: string): Promise<string | null> => {
+  const cachedImage = await searchImageDatabase(description);
+  if (cachedImage) return cachedImage;
+
   try {
-    // Simplified prompt for speed and reliability
-    const prompt = `Digital art, highly detailed, cinematic lighting. Scene: ${description}`;
+    const prompt = `Digital art, highly detailed, cinematic lighting. Scene: ${description.substring(0, 300)}`;
 
     const response = await ai.models.generateContent({
       model: IMAGE_MODEL,
@@ -119,24 +144,27 @@ export const generateSimulationImage = async (description: string): Promise<stri
       config: {}
     });
 
-    // Iterate parts to find the image
     const parts = response.candidates?.[0]?.content?.parts;
     if (parts) {
       for (const part of parts) {
         if (part.inlineData && part.inlineData.data) {
-           return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+           const imageBase64 = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+           uploadImageToDatabase(description, imageBase64);
+           return imageBase64;
         }
       }
     }
     return null;
   } catch (error) {
     console.error("Image Gen Error:", error);
+    // Return null explicitly to stop loading spinners
     return null;
   }
 };
 
 /**
  * Chat with a debate partner or project collaborator.
+ * Enhanced to use structured Content arrays for proper role history.
  */
 export const generateDebateResponse = async (
   history: { role: 'user' | 'model'; text: string }[],
@@ -166,20 +194,22 @@ export const generateDebateResponse = async (
     请使用简体中文回复。保持回复简洁（100字以内），以保持对话流畅。
   `;
 
-  // Replay history (excluding the very last user message which we send now)
-  // Construct conversation string for context
-  const conversationString = history.map(h => `${h.role === 'user' ? '用户' : '伙伴'}: ${h.text}`).join('\n');
+  // Map internal history format to Gemini API 'Content' objects
+  const contents: Content[] = history.map(h => ({
+      role: h.role === 'user' ? 'user' : 'model',
+      parts: [{ text: h.text }]
+  }));
 
   try {
     const response = await ai.models.generateContent({
       model: TEXT_MODEL,
-      contents: `${conversationString}\n伙伴:`, // Completion style
+      contents: contents, 
       config: { systemInstruction }
     });
-    return response.text || "...";
+    return response.text || "（思考中...）";
   } catch (error) {
     console.error("Debate Error:", error);
-    return "我需要一点时间思考这个问题。";
+    return "连接断开，请重试。";
   }
 };
 
@@ -245,12 +275,22 @@ export const generateStoryScene = async (
     输出 JSON。
   `;
 
-  const prompt = `历史:\n${history.slice(-2).join('\n')}\n动作: ${action}`;
+  // Explicitly separate history from current action
+  const contents: Content[] = [];
+  
+  if (history.length > 0) {
+      // Summarize history context if too long
+      const contextStr = `前情提要:\n${history.slice(-3).join('\n')}`;
+      contents.push({ role: 'user', parts: [{ text: contextStr }] });
+      contents.push({ role: 'model', parts: [{ text: '明白，请继续。' }] });
+  }
+
+  contents.push({ role: 'user', parts: [{ text: `当前动作: ${action}` }] });
 
   try {
     const response = await ai.models.generateContent({
       model: TEXT_MODEL,
-      contents: prompt,
+      contents: contents,
       config: {
         systemInstruction: systemPrompt,
         responseMimeType: "application/json",

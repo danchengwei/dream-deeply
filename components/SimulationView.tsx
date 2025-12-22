@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { generateSimulationTurn, generateSimulationImage } from '../services/geminiService';
 import { SimulationType, SimulationState, SavedRecord } from '../types';
@@ -35,6 +36,13 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
   const bottomRef = useRef<HTMLDivElement>(null);
   const reportSaved = useRef(false);
 
+  // Helper to scroll to bottom safely
+  const scrollToBottom = () => {
+    setTimeout(() => {
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
+
   // Initialize
   useEffect(() => {
     if (initialized.current) return;
@@ -45,6 +53,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
       
       try {
         const turn = await generateSimulationTurn([], initialContext || "Start", "开始模拟，请描述初始场景");
+        
         setSimState(prev => ({
           ...prev,
           description: turn.description,
@@ -54,23 +63,33 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
           isEnded: turn.isEnded || false,
           report: turn.report
         }));
+        
+        scrollToBottom();
 
+        // Separate image generation so it doesn't block text
         const image = await generateSimulationImage(turn.description);
         setSimState(prev => ({ ...prev, imageBase64: image, isImageLoading: false }));
         
       } catch (e) {
         console.error(e);
+        setSimState(prev => ({ 
+            ...prev, 
+            description: "初始化失败，请重试。", 
+            isLoading: false, 
+            isImageLoading: false 
+        }));
       }
     };
 
     startSimulation();
   }, [type, customTopic]);
 
+  // Auto scroll when history updates
   useEffect(() => {
     if (!simState.isLoading) {
-       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+       scrollToBottom();
     }
-  }, [simState.history, simState.isLoading, simState.isEnded]);
+  }, [simState.history, simState.isLoading]);
 
   // Auto Save Report Logic
   useEffect(() => {
@@ -105,18 +124,30 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
         description: turn.description,
         options: turn.options || [],
         history: [...newHistory, { role: 'model' as const, text: turn.description }],
-        isLoading: false,
+        isLoading: false, // Text is done
         isEnded: turn.isEnded,
         report: turn.report
       }));
+      
+      scrollToBottom();
 
+      // Trigger image generation
       generateSimulationImage(turn.description).then(image => {
         setSimState(prev => ({ ...prev, imageBase64: image, isImageLoading: false }));
+      }).catch(() => {
+         setSimState(prev => ({ ...prev, isImageLoading: false }));
       });
 
     } catch (e) {
       console.error(e);
-      setSimState(prev => ({ ...prev, isLoading: false, isImageLoading: false }));
+      setSimState(prev => ({ 
+        ...prev, 
+        isLoading: false, 
+        isImageLoading: false,
+        // Append error message to history so user knows
+        history: [...prev.history, { role: 'model' as const, text: "连接中断，请重试。" }]
+      }));
+      scrollToBottom();
     }
   };
 
@@ -185,7 +216,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
         <div className="w-full md:w-1/2 flex flex-col flex-1 min-h-0 bg-dark relative overflow-hidden">
            
            {/* Chat History */}
-           <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
+           <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 scroll-smooth">
               {simState.history.slice(1).map((msg, idx) => (
                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in-up`}>
                   <div className={`max-w-[90%] rounded-2xl p-4 shadow-sm transition-transform hover:scale-[1.01] ${
@@ -233,7 +264,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
              <div className="shrink-0 p-4 md:p-6 bg-surface/50 border-t border-white/5 backdrop-blur-sm z-20 animate-slide-in-right">
                 
                 {/* Options */}
-                {simState.options.length > 0 && (
+                {simState.options.length > 0 && !simState.isLoading && (
                   <div className="grid gap-2 mb-4">
                     {simState.options.map((option, idx) => (
                       <button

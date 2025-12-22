@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { generateDebateResponse } from '../services/geminiService';
 import { DebatePersona, ChatMessage } from '../types';
@@ -25,7 +26,10 @@ const DebateView: React.FC<DebateViewProps> = ({ onExit }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Small timeout to ensure DOM is updated
+    setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
   };
 
   useEffect(() => {
@@ -61,6 +65,7 @@ const DebateView: React.FC<DebateViewProps> = ({ onExit }) => {
 
     try {
       // Build history for service
+      // Note: service now expects standard {role, text} objects
       const history = messages.map(m => ({ role: m.role, text: m.text }));
       history.push({ role: 'user', text: userMsg.text });
 
@@ -75,6 +80,13 @@ const DebateView: React.FC<DebateViewProps> = ({ onExit }) => {
       setMessages(prev => [...prev, aiMsg]);
     } catch (e) {
       console.error(e);
+      // Fallback message so user isn't stuck
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'model',
+        text: "抱歉，我的思维连接似乎断开了。请重试。",
+        timestamp: Date.now()
+      }]);
     } finally {
       setIsTyping(false);
     }
@@ -214,6 +226,7 @@ const DebateView: React.FC<DebateViewProps> = ({ onExit }) => {
             placeholder="输入消息..."
             className="flex-1 bg-transparent p-3 text-white placeholder-slate-500 focus:outline-none text-sm"
             autoFocus
+            disabled={isTyping}
           />
           <button 
             onClick={handleSend}
