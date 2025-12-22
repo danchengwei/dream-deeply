@@ -29,6 +29,7 @@ export interface SimulationState {
   history: { role: 'user' | 'model'; text: string }[];
   isLoading: boolean;
   isImageLoading: boolean;
+  waitingForVisualChoice: boolean; // New field for UI flow control
   isEnded: boolean;
   report?: AnalysisReport | null;
 }

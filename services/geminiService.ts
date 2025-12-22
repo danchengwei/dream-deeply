@@ -130,13 +130,25 @@ export const generateSimulationTurn = async (
 
 /**
  * Generates a visual representation of the current simulation state.
+ * @param description The scene description
+ * @param style The visualization style: 'ARTISTIC' (default) or 'SCHEMATIC' (Scientific/Technical)
  */
-export const generateSimulationImage = async (description: string): Promise<string | null> => {
+export const generateSimulationImage = async (
+  description: string, 
+  style: 'ARTISTIC' | 'SCHEMATIC' = 'ARTISTIC'
+): Promise<string | null> => {
   const cachedImage = await searchImageDatabase(description);
   if (cachedImage) return cachedImage;
 
   try {
-    const prompt = `Digital art, highly detailed, cinematic lighting. Scene: ${description.substring(0, 300)}`;
+    let stylePrompt = "";
+    if (style === 'SCHEMATIC') {
+      stylePrompt = "Scientific diagram style, technical schematic, clean vector lines, educational textbook illustration, flat design, high contrast, clear data visualization style.";
+    } else {
+      stylePrompt = "Digital art, highly detailed, cinematic lighting, immersive atmosphere, realistic textures.";
+    }
+
+    const prompt = `${stylePrompt} Scene: ${description.substring(0, 300)}`;
 
     const response = await ai.models.generateContent({
       model: IMAGE_MODEL,
