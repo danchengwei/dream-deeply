@@ -1,0 +1,7 @@
+{
+  "name": "Nexus Learn: 沉浸式情境学习",
+  "description": "下一代学习平台，利用 GenAI 构建多模态场景模拟（历史、科学、编程）及智能辩论伙伴，提升学习参与感与理解深度。",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
