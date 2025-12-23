@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { generateStoryScene, generateSimulationImage, initializeStoryRole } from '../services/geminiService';
 import { StorySceneState, StoryInteractable } from '../types';
 import { Icons } from '../constants';
@@ -8,6 +8,42 @@ interface InteractiveStoryViewProps {
   theme: string;
   onExit: () => void;
 }
+
+// Extracted and Memoized Particle Component to prevent re-renders
+const StoryParticleBackground = React.memo(() => {
+  const particles = useMemo(() => {
+    return Array.from({ length: 80 }).map((_, i) => ({
+      id: i,
+      top: `${Math.random() * 100}%`,
+      left: `${Math.random() * 100}%`,
+      width: `${Math.random() * 3 + 1}px`,
+      height: `${Math.random() * 3 + 1}px`,
+      opacity: Math.random() * 0.6 + 0.2,
+      animationDuration: '2s',
+      animationDelay: `${Math.random() * 2}s`
+    }));
+  }, []);
+
+  return (
+    <div className="absolute inset-0 overflow-hidden">
+        {particles.map((p) => (
+        <div 
+            key={p.id}
+            className="absolute bg-white rounded-full shadow-[0_0_8px_rgba(255,255,255,0.8)] animate-jump will-change-transform"
+            style={{
+                top: p.top, 
+                left: p.left,
+                width: p.width,
+                height: p.height,
+                opacity: p.opacity,
+                animationDuration: p.animationDuration, 
+                animationDelay: p.animationDelay
+            }}
+        />
+        ))}
+    </div>
+  );
+});
 
 const InteractiveStoryView: React.FC<InteractiveStoryViewProps> = ({ theme, onExit }) => {
   const [gameState, setGameState] = useState<StorySceneState>({
@@ -378,24 +414,8 @@ const InteractiveStoryView: React.FC<InteractiveStoryViewProps> = ({ theme, onEx
            {/* Deep Space Gradient */}
            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-indigo-900/40 via-[#0f172a] to-black opacity-90 animate-pulse-slow"></div>
            
-           {/* Full Screen Jumping Particle Field */}
-           <div className="absolute inset-0 overflow-hidden">
-              {[...Array(80)].map((_, i) => (
-                <div 
-                   key={i}
-                   className="absolute bg-white rounded-full shadow-[0_0_8px_rgba(255,255,255,0.8)] animate-jump"
-                   style={{
-                      top: `${Math.random() * 100}%`, 
-                      left: `${Math.random() * 100}%`,
-                      width: `${Math.random() * 3 + 1}px`,
-                      height: `${Math.random() * 3 + 1}px`,
-                      opacity: Math.random() * 0.6 + 0.2,
-                      animationDuration: '2s', 
-                      animationDelay: `${Math.random() * 2}s`
-                   }}
-                />
-              ))}
-           </div>
+           {/* Use Memoized Particle Component */}
+           <StoryParticleBackground />
 
            {/* Central Content */}
            <div className="relative z-10 flex flex-col items-center gap-8 animate-fade-in-up w-full max-w-2xl px-4">

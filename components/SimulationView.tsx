@@ -1,8 +1,9 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { generateSimulationTurn, generateSimulationImage } from '../services/geminiService';
 import { SimulationType, SimulationState, SavedRecord } from '../types';
 import { Icons } from '../constants';
+import Matter from 'matter-js';
 
 interface SimulationViewProps {
   type: SimulationType;
@@ -19,14 +20,248 @@ const TYPE_LABELS = {
   [SimulationType.CUSTOM]: "自定义"
 };
 
+// --- Context-Aware Physics Engine ---
+const PhysicsCanvas = React.memo(({ type, description, topic }: { type: SimulationType, description: string, topic?: string }) => {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const engineRef = useRef<Matter.Engine | null>(null);
+  const renderRef = useRef<Matter.Render | null>(null);
+  const runnerRef = useRef<Matter.Runner | null>(null);
+
+  // Initialize World
+  useEffect(() => {
+      if (!boxRef.current) return;
+
+      // Module Aliases
+      const Engine = Matter.Engine,
+            Render = Matter.Render,
+            Runner = Matter.Runner,
+            World = Matter.World,
+            Bodies = Matter.Bodies,
+            Mouse = Matter.Mouse,
+            MouseConstraint = Matter.MouseConstraint;
+
+      // Clean up previous instance if exists (safety check)
+      if (engineRef.current) {
+        World.clear(engineRef.current.world, false);
+        Engine.clear(engineRef.current);
+      }
+
+      const engine = Engine.create();
+      engineRef.current = engine;
+
+      const width = boxRef.current.clientWidth;
+      const height = boxRef.current.clientHeight;
+
+      const render = Render.create({
+          element: boxRef.current,
+          engine: engine,
+          options: {
+              width,
+              height,
+              background: '#0f172a',
+              wireframes: false, // Solid shapes
+              pixelRatio: window.devicePixelRatio
+          }
+      });
+      renderRef.current = render;
+
+      // Walls
+      const wallOptions = { isStatic: true, render: { fillStyle: '#1e293b' } };
+      World.add(engine.world, [
+          Bodies.rectangle(width / 2, height + 30, width, 60, wallOptions), // Ground
+          Bodies.rectangle(width / 2, -30, width, 60, wallOptions), // Ceiling
+          Bodies.rectangle(width + 30, height / 2, 60, height, wallOptions), // Right
+          Bodies.rectangle(-30, height / 2, 60, height, wallOptions) // Left
+      ]);
+
+      // --- Contextual Initialization ---
+      const combinedText = (description + " " + (topic || "")).toLowerCase();
+      
+      if (type === SimulationType.CHEMISTRY) {
+           engine.gravity.y = 0; // Microgravity for molecules
+           engine.gravity.scale = 0;
+           
+           // Determine molecule type/color based on text
+           let color = '#6366f1'; // Default Indigo
+           if (combinedText.includes('acid') || combinedText.includes('red') || combinedText.includes('fire')) color = '#ef4444'; // Red
+           else if (combinedText.includes('base') || combinedText.includes('blue') || combinedText.includes('water')) color = '#3b82f6'; // Blue
+           else if (combinedText.includes('gas') || combinedText.includes('steam')) color = '#cbd5e1'; // White/Grey
+
+           const particles = [];
+           const count = combinedText.includes('explosion') || combinedText.includes('fast') ? 60 : 30;
+           const speed = combinedText.includes('heat') || combinedText.includes('hot') ? 15 : 5;
+
+           for(let i=0; i<count; i++) {
+               const r = 6 + Math.random() * 8;
+               const particle = Bodies.circle(
+                   Math.random() * (width - 100) + 50, 
+                   Math.random() * (height - 100) + 50, 
+                   r, 
+                   { 
+                       restitution: 0.9, 
+                       frictionAir: 0.005,
+                       render: { fillStyle: color, opacity: 0.8 } 
+                   }
+               );
+               Matter.Body.setVelocity(particle, { 
+                   x: (Math.random()-0.5) * speed, 
+                   y: (Math.random()-0.5) * speed 
+               });
+               particles.push(particle);
+           }
+           World.add(engine.world, particles);
+
+      } else {
+           // PHYSICS
+           engine.gravity.y = 1;
+           engine.gravity.scale = 0.001; // Normal gravity
+
+           // Detect scenario
+           if (combinedText.includes('pendulum') || combinedText.includes('swing')) {
+               // Pendulum setup
+               const ball = Bodies.circle(width/2, height/2, 20, { density: 0.04, render: { fillStyle: '#f43f5e' } });
+               const anchor = { x: width/2, y: 100 };
+               const constraint = Matter.Constraint.create({
+                   pointA: anchor,
+                   bodyB: ball,
+                   stiffness: 0.9,
+                   length: 200,
+                   render: { strokeStyle: '#cbd5e1' }
+               });
+               World.add(engine.world, [ball, constraint]);
+           } 
+           else if (combinedText.includes('ramp') || combinedText.includes('slide') || combinedText.includes('incline')) {
+               // Ramp setup
+               const ramp = Bodies.rectangle(width/2, height - 150, 400, 20, { 
+                   isStatic: true, 
+                   angle: Math.PI * 0.15,
+                   render: { fillStyle: '#475569' }
+               });
+               const box = Bodies.rectangle(width/2 - 150, height - 300, 40, 40, { render: { fillStyle: '#facc15' } });
+               const circle = Bodies.circle(width/2 - 100, height - 300, 20, { render: { fillStyle: '#f43f5e' } });
+               World.add(engine.world, [ramp, box, circle]);
+           }
+           else {
+               // Default Stack (Gravity test)
+               const stack = Matter.Composites.stack(width/2 - 50, 100, 4, 4, 0, 0, (x, y) => {
+                   return Bodies.rectangle(x, y, 40, 40, { 
+                     render: { fillStyle: '#6366f1' },
+                     restitution: 0.6
+                   });
+               });
+               World.add(engine.world, stack);
+           }
+      }
+
+      // Mouse Interaction
+      const mouse = Mouse.create(render.canvas);
+      const mouseConstraint = MouseConstraint.create(engine, {
+          mouse: mouse,
+          constraint: { stiffness: 0.2, render: { visible: false } }
+      });
+      World.add(engine.world, mouseConstraint);
+      render.mouse = mouse;
+
+      // Start
+      Render.run(render);
+      const runner = Runner.create();
+      runnerRef.current = runner;
+      Runner.run(runner, engine);
+
+      return () => {
+          Render.stop(render);
+          Runner.stop(runner);
+          if (engineRef.current) {
+             World.clear(engineRef.current.world, false);
+             Engine.clear(engineRef.current);
+          }
+          if (render.canvas) render.canvas.remove();
+          renderRef.current = null;
+          runnerRef.current = null;
+          engineRef.current = null;
+      };
+  }, [type, topic]); // Re-init on fundamental type change
+
+  // Dynamic Updates based on Description Changes (User moves forward in simulation)
+  useEffect(() => {
+      if (!engineRef.current) return;
+      const combinedText = description.toLowerCase();
+      const World = Matter.World;
+      const Bodies = Matter.Bodies;
+      const width = boxRef.current?.clientWidth || 800;
+
+      // React to specific event keywords in the new turn
+      if (combinedText.includes('explode') || combinedText.includes('boom')) {
+          const bodies = Matter.Composite.allBodies(engineRef.current.world);
+          bodies.forEach(body => {
+              if (!body.isStatic) {
+                  Matter.Body.applyForce(body, body.position, { 
+                      x: (body.position.x - width/2) * 0.002, 
+                      y: (body.position.y - 300) * 0.002 
+                  });
+              }
+          });
+      }
+      
+      if (combinedText.includes('add') || combinedText.includes('appear') || combinedText.includes('drop')) {
+          // Spawn a new object
+          const newBody = Bodies.polygon(width/2 + (Math.random()-0.5)*100, 50, Math.floor(Math.random() * 5) + 3, 30, {
+              render: { fillStyle: '#ffffff' },
+              restitution: 0.6
+          });
+          World.add(engineRef.current.world, newBody);
+      }
+
+  }, [description]);
+
+  return <div ref={boxRef} className="w-full h-full relative cursor-crosshair" />;
+});
+
+
+// Extracted and Memoized Particle Component
+const ParticleBackground = React.memo(() => {
+  const particles = useMemo(() => {
+    return Array.from({ length: 60 }).map((_, i) => ({
+      id: i,
+      top: `${Math.random() * 100}%`,
+      left: `${Math.random() * 100}%`,
+      width: `${Math.random() * 3 + 1}px`,
+      height: `${Math.random() * 3 + 1}px`,
+      opacity: Math.random() * 0.5 + 0.1,
+      animationDuration: `${1.5 + Math.random()}s`,
+      animationDelay: `${Math.random() * 2}s`
+    }));
+  }, []);
+
+  return (
+    <div className="absolute inset-0 overflow-hidden pointer-events-none">
+       {particles.map((p) => (
+         <div 
+            key={p.id}
+            className="absolute bg-white rounded-full shadow-[0_0_8px_rgba(255,255,255,0.8)] animate-jump will-change-transform"
+            style={{
+               top: p.top, 
+               left: p.left,
+               width: p.width,
+               height: p.height,
+               opacity: p.opacity,
+               animationDuration: p.animationDuration, 
+               animationDelay: p.animationDelay
+            }}
+         />
+       ))}
+    </div>
+  );
+});
+
 const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onExit, onSaveRecord }) => {
   const [simState, setSimState] = useState<SimulationState>({
-    description: "正在初始化模拟环境，分析场景参数...",
+    description: "正在初始化模拟环境...",
     imageBase64: null,
     options: [],
     history: [],
     isLoading: true,
-    isImageLoading: true,
+    isImageLoading: true, // Only true when we are actually fetching something
     waitingForVisualChoice: false,
     isEnded: false,
     report: null
@@ -43,37 +278,32 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
 
   const isScientificMode = type === SimulationType.PHYSICS || type === SimulationType.CHEMISTRY;
 
-  // Helper to scroll to bottom safely
   const scrollToBottom = () => {
     setTimeout(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, 100);
   };
 
-  // Fake logs for immersion
+  // Fake logs
   useEffect(() => {
-    if(simState.isLoading || simState.isImageLoading) {
+    if(simState.isLoading) {
         const logs = [
             `> Initializing ${type} Module...`,
             "> Connecting to Neural Core...",
-            "> Loading context parameters...",
-            "> Synthesizing environmental data...",
-            "> Rendering simulation matrix...",
-            "> Optimizing visual assets...",
-            "> Stabilizing quantum state...",
-            "> Finalizing output stream..."
+            "> Analyzing scenario parameters...",
+            "> Awaiting User Input..."
         ];
         let i = 0;
         const interval = setInterval(() => {
-            const text = i < logs.length ? logs[i] : `> Processing data chunk ${Math.floor(Math.random() * 9999)}...`;
+            const text = i < logs.length ? logs[i] : `> Computing probability fields...`;
             setLoadingLogs(prev => [...prev.slice(-4), text]);
             i++;
         }, 400); 
         return () => clearInterval(interval);
     }
-  }, [simState.isLoading, simState.isImageLoading, type]);
+  }, [simState.isLoading, type]);
 
-  // Initialize
+  // --- 1. INITIALIZATION ---
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
@@ -84,7 +314,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
       try {
         const turn = await generateSimulationTurn([], initialContext || "Start", "开始模拟，请描述初始场景");
         
-        // 1. Text is ready
+        // Update Text State ONLY first
         setSimState(prev => ({
           ...prev,
           description: turn.description,
@@ -92,17 +322,20 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
           history: [{ role: 'model' as const, text: turn.description }],
           isLoading: false,
           isEnded: turn.isEnded || false,
-          report: turn.report
+          report: turn.report,
+          // CRITICAL: Stop loading image by default. Wait for user.
+          isImageLoading: false, 
+          waitingForVisualChoice: false
         }));
         
         scrollToBottom();
 
-        // 2. Logic for Image Generation
+        // LOGIC BRANCH:
         if (isScientificMode) {
-          // For Physics/Chemistry, pause and wait for user to choose style ONCE at start
-          setSimState(prev => ({ ...prev, waitingForVisualChoice: true, isImageLoading: false }));
+          // Scientific: Pause and ask user.
+          setSimState(prev => ({ ...prev, waitingForVisualChoice: true }));
         } else {
-          // For History/Custom, default to ARTISTIC
+          // History/Custom: Default to Artistic, but trigger load separate from initial render
           setVisualStyle('ARTISTIC');
           triggerImageGeneration(turn.description, 'ARTISTIC', turn.isEnded || false);
         }
@@ -122,12 +355,83 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
     startSimulation();
   }, [type, customTopic, isScientificMode]);
 
-  // Auto scroll when history updates
-  useEffect(() => {
-    if (!simState.isLoading) {
-       scrollToBottom();
+  // --- 2. USER ACTION ---
+  const handleAction = async (actionText: string) => {
+    if (!actionText.trim() || simState.isLoading || simState.isEnded || simState.waitingForVisualChoice) return;
+
+    // Set text loading, keep visual state as is for now
+    setSimState(prev => ({ ...prev, isLoading: true }));
+    setCustomInput('');
+
+    try {
+      const newHistory: { role: 'user' | 'model'; text: string }[] = [...simState.history, { role: 'user', text: actionText }];
+      const context = customTopic || ""; 
+      
+      // Generate Text
+      const turn = await generateSimulationTurn(newHistory, context, actionText);
+
+      setSimState(prev => ({
+        ...prev,
+        description: turn.description,
+        options: turn.options || [],
+        history: [...newHistory, { role: 'model' as const, text: turn.description }],
+        isLoading: false,
+        isEnded: turn.isEnded,
+        report: turn.report
+      }));
+      
+      scrollToBottom();
+
+      // Handle Visual Update based on CURRENT style
+      if (visualStyle === 'ARTISTIC') {
+          triggerImageGeneration(turn.description, 'ARTISTIC', turn.isEnded);
+      } else if (visualStyle === 'SCHEMATIC') {
+          // For Schematic, we rely on the prop update passed to PhysicsCanvas
+          // We DO NOT trigger image generation.
+          if (turn.isEnded) setTimeout(() => setShowReportModal(true), 1200);
+      }
+
+    } catch (e) {
+      console.error(e);
+      setSimState(prev => ({ ...prev, isLoading: false }));
     }
-  }, [simState.history, simState.isLoading]);
+  };
+
+  // --- 3. VISUAL LOGIC ---
+  const triggerImageGeneration = async (description: string, style: 'ARTISTIC' | 'SCHEMATIC', isEnded: boolean) => {
+      // If we are in Schematic mode, abort AI image generation completely
+      if (style === 'SCHEMATIC') return;
+
+      setSimState(prev => ({ ...prev, isImageLoading: true, waitingForVisualChoice: false }));
+      
+      try {
+        const image = await generateSimulationImage(description, style);
+        setSimState(prev => ({ ...prev, imageBase64: image, isImageLoading: false }));
+
+        if (isEnded) setTimeout(() => setShowReportModal(true), 1200);
+      } catch (e) {
+        setSimState(prev => ({ ...prev, isImageLoading: false }));
+        if (isEnded) setShowReportModal(true);
+      }
+  };
+
+  const handleVisualChoice = (style: 'ARTISTIC' | 'SCHEMATIC') => {
+      setVisualStyle(style);
+      
+      if (style === 'ARTISTIC') {
+         // User chose AI Image: Start loading NOW.
+         triggerImageGeneration(simState.description, style, simState.isEnded);
+      } else {
+         // User chose Physics: Just update state to show canvas. 
+         // NO AI loading. PhysicsCanvas will mount immediately.
+         setSimState(prev => ({ ...prev, isImageLoading: false, waitingForVisualChoice: false }));
+      }
+  };
+
+  const handleCustomSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    handleAction(customInput);
+  };
 
   // Auto Save Report Logic
   useEffect(() => {
@@ -145,103 +449,13 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
     }
   }, [simState.isEnded, simState.report, type, customTopic, simState.history, onSaveRecord]);
 
-  const handleAction = async (actionText: string) => {
-    if (!actionText.trim() || simState.isLoading || simState.isEnded || simState.waitingForVisualChoice) return;
 
-    // Set loading
-    setSimState(prev => ({ ...prev, isLoading: true, isImageLoading: true, waitingForVisualChoice: false }));
-    setCustomInput('');
-
-    try {
-      const newHistory: { role: 'user' | 'model'; text: string }[] = [...simState.history, { role: 'user', text: actionText }];
-      const context = customTopic || ""; 
-      
-      // 1. Generate Text
-      const turn = await generateSimulationTurn(newHistory, context, actionText);
-
-      setSimState(prev => ({
-        ...prev,
-        description: turn.description,
-        options: turn.options || [],
-        history: [...newHistory, { role: 'model' as const, text: turn.description }],
-        isLoading: false, // Text done
-        isEnded: turn.isEnded,
-        report: turn.report
-      }));
-      
-      scrollToBottom();
-
-      // 2. Handle Image Generation Logic
-      // Use the persisted visualStyle, default to ARTISTIC if somehow missing
-      const style = visualStyle || 'ARTISTIC';
-      triggerImageGeneration(turn.description, style, turn.isEnded);
-
-    } catch (e) {
-      console.error(e);
-      setSimState(prev => ({ 
-        ...prev, 
-        isLoading: false, 
-        isImageLoading: false,
-        history: [...prev.history, { role: 'model' as const, text: "连接中断，请重试。" }]
-      }));
-      scrollToBottom();
-    }
-  };
-
-  // New function to separate the actual API call
-  const triggerImageGeneration = async (description: string, style: 'ARTISTIC' | 'SCHEMATIC', isEnded: boolean) => {
-      setSimState(prev => ({ ...prev, isImageLoading: true, waitingForVisualChoice: false }));
-      
-      try {
-        const image = await generateSimulationImage(description, style);
-        setSimState(prev => ({ ...prev, imageBase64: image, isImageLoading: false }));
-
-        if (isEnded) {
-             // Wait a moment for user to see the final image before showing the modal
-             setTimeout(() => {
-                 setShowReportModal(true);
-             }, 1200);
-        }
-      } catch (e) {
-        setSimState(prev => ({ ...prev, isImageLoading: false }));
-        if (isEnded) setShowReportModal(true);
-      }
-  };
-
-  const handleVisualChoice = (style: 'ARTISTIC' | 'SCHEMATIC') => {
-      setVisualStyle(style);
-      triggerImageGeneration(simState.description, style, simState.isEnded);
-  };
-
-  const handleCustomSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    handleAction(customInput);
-  };
-
-  // --- Initial Full Screen Loader (Jumping Particles style) ---
+  // --- Initial Full Screen Loader ---
   if (simState.isLoading && simState.history.length === 0) {
       return (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden bg-[#020617] text-slate-200 font-mono">
            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-indigo-900/40 via-[#0f172a] to-black opacity-90 animate-pulse-slow"></div>
-           
-           <div className="absolute inset-0 overflow-hidden pointer-events-none">
-              {[...Array(60)].map((_, i) => (
-                <div 
-                   key={i}
-                   className="absolute bg-white rounded-full shadow-[0_0_8px_rgba(255,255,255,0.8)] animate-jump"
-                   style={{
-                      top: `${Math.random() * 100}%`, 
-                      left: `${Math.random() * 100}%`,
-                      width: `${Math.random() * 3 + 1}px`,
-                      height: `${Math.random() * 3 + 1}px`,
-                      opacity: Math.random() * 0.5 + 0.1,
-                      animationDuration: `${1.5 + Math.random()}s`, 
-                      animationDelay: `${Math.random() * 2}s`
-                   }}
-                />
-              ))}
-           </div>
-
+           <ParticleBackground />
            <div className="relative z-10 flex flex-col items-center gap-8 w-full max-w-lg px-6">
               <div className="text-center space-y-2">
                  <div className="w-16 h-16 mx-auto bg-white/5 rounded-full flex items-center justify-center border border-white/10 shadow-[0_0_30px_rgba(99,102,241,0.3)] animate-spin-slow">
@@ -252,7 +466,6 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                  </h2>
                  <p className="text-[10px] text-indigo-400/60 tracking-widest">ESTABLISHING NEURAL LINK</p>
               </div>
-
               <div className="w-full bg-black/40 backdrop-blur-md border-l-2 border-indigo-500/50 p-4 h-32 flex flex-col justify-end font-mono text-xs text-indigo-300 shadow-inner rounded-r-lg transition-all">
                  {loadingLogs.map((log, i) => (
                     <div key={i} className="animate-fade-in-up truncate">
@@ -285,7 +498,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
              {/* Show current style indicator if set */}
              {visualStyle === 'SCHEMATIC' && (
                 <span className="px-2 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                   仿真视图
+                   仿真引擎: {type === SimulationType.CHEMISTRY ? '分子动力学' : '刚体物理'}
                 </span>
              )}
            </div>
@@ -302,50 +515,71 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
         {/* Visual Viewport */}
         <div className="w-full md:w-1/2 h-[35vh] md:h-full relative bg-black flex items-center justify-center overflow-hidden border-r border-white/5 shrink-0 group">
            
-           {/* Main Image Display */}
-           {simState.imageBase64 && !simState.waitingForVisualChoice ? (
-             <div className="absolute inset-0">
-                <img 
-                  src={simState.imageBase64} 
-                  alt="Simulation State" 
-                  className={`w-full h-full object-cover transition-all duration-700 ${simState.isImageLoading ? 'opacity-30 blur-md scale-105 saturate-0' : 'opacity-100 scale-100 group-hover:scale-110'}`}
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-dark/80 via-transparent to-transparent md:bg-gradient-to-l md:from-dark/50" />
-             </div>
-           ) : (
-             <div className="absolute inset-0 bg-slate-900/50 flex flex-col items-center justify-center">
-                 {!simState.waitingForVisualChoice && (
-                    <div className="text-slate-600 flex flex-col items-center">
-                       <Icons.Sparkles />
-                       <span className="text-xs mt-2">等待数据输入...</span>
-                    </div>
-                 )}
-             </div>
+           {/* LAYER 1: PHYSICS CANVAS (Context Aware) */}
+           {/* Only render if style is schematic and NOT waiting for choice */}
+           {visualStyle === 'SCHEMATIC' && !simState.waitingForVisualChoice && (
+              <div className="w-full h-full relative animate-fade-in">
+                 <PhysicsCanvas 
+                    type={type} 
+                    description={simState.description}
+                    topic={customTopic}
+                 />
+                 <div className="absolute top-4 left-4 bg-black/60 backdrop-blur text-[10px] text-white/70 px-3 py-1.5 rounded-full border border-white/10 pointer-events-none select-none z-10">
+                     <span className="w-2 h-2 inline-block bg-green-500 rounded-full mr-2 animate-pulse"></span>
+                     Real-time Physics: Interactive
+                 </div>
+              </div>
            )}
 
-           {/* VISUAL CHOICE OVERLAY (Physics/Chemistry) - Only shows once at start */}
+           {/* LAYER 2: AI IMAGE */}
+           {visualStyle === 'ARTISTIC' && !simState.waitingForVisualChoice && (
+               simState.imageBase64 ? (
+                <div className="absolute inset-0">
+                    <img 
+                      src={simState.imageBase64} 
+                      alt="Simulation State" 
+                      className={`w-full h-full object-cover transition-all duration-700 ${simState.isImageLoading ? 'opacity-30 blur-md scale-105 saturate-0' : 'opacity-100 scale-100 group-hover:scale-110'}`}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-dark/80 via-transparent to-transparent md:bg-gradient-to-l md:from-dark/50" />
+                </div>
+               ) : (
+                // Fallback while first image loads
+                <div className="absolute inset-0 bg-slate-900/50 flex flex-col items-center justify-center">
+                    {!simState.isImageLoading && (
+                        <div className="text-slate-600 flex flex-col items-center">
+                          <Icons.Sparkles />
+                          <span className="text-xs mt-2">准备生成...</span>
+                        </div>
+                    )}
+                </div>
+               )
+           )}
+
+           {/* LAYER 3: SELECTION OVERLAY (Scientific Mode Only) */}
            {simState.waitingForVisualChoice && (
-              <div className="absolute inset-0 z-30 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center animate-fade-in p-6 text-center">
-                 <div className="mb-6">
-                    <h3 className="text-xl font-bold text-white mb-2">选择可视化模式</h3>
-                    <p className="text-sm text-slate-400">检测到科学模拟场景，请选择全程渲染引擎</p>
+              <div className="absolute inset-0 z-30 bg-black/90 backdrop-blur-md flex flex-col items-center justify-center animate-fade-in p-6 text-center">
+                 <div className="mb-8">
+                    <h3 className="text-2xl font-bold text-white mb-2">选择模拟引擎</h3>
+                    <p className="text-sm text-slate-400">检测到科学场景，请选择一种可视化方式</p>
                  </div>
                  
-                 <div className="flex flex-col md:flex-row gap-4 w-full max-w-md">
+                 <div className="flex flex-col md:flex-row gap-6 w-full max-w-lg">
                      <button 
                        onClick={() => handleVisualChoice('SCHEMATIC')}
                        className="flex-1 group relative overflow-hidden bg-slate-800 border border-white/10 rounded-xl p-6 hover:border-blue-500/50 transition-all hover:bg-slate-800/80 active:scale-95"
                      >
                         <div className="absolute inset-0 bg-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-                        <div className="relative z-10 flex flex-col items-center gap-3">
-                           <div className="p-3 bg-blue-500/20 text-blue-400 rounded-full group-hover:scale-110 transition-transform">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                        <div className="relative z-10 flex flex-col items-center gap-4">
+                           <div className="p-4 bg-blue-500/20 text-blue-400 rounded-full group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(59,130,246,0.2)]">
+                              <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
                               </svg>
                            </div>
                            <div className="text-left">
-                              <div className="font-bold text-slate-200 text-center">仿真模型</div>
-                              <div className="text-[10px] text-slate-500 text-center">结构图 · 示意图 · 原理展示</div>
+                              <div className="font-bold text-slate-200 text-center text-lg">实时物理仿真</div>
+                              <div className="text-xs text-slate-500 text-center mt-1">
+                                 Matter.js 引擎 · 交互式 · {type === SimulationType.CHEMISTRY ? '粒子碰撞' : '刚体动力学'}
+                              </div>
                            </div>
                         </div>
                      </button>
@@ -355,13 +589,15 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                        className="flex-1 group relative overflow-hidden bg-slate-800 border border-white/10 rounded-xl p-6 hover:border-purple-500/50 transition-all hover:bg-slate-800/80 active:scale-95"
                      >
                         <div className="absolute inset-0 bg-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-                        <div className="relative z-10 flex flex-col items-center gap-3">
-                           <div className="p-3 bg-purple-500/20 text-purple-400 rounded-full group-hover:scale-110 transition-transform">
+                        <div className="relative z-10 flex flex-col items-center gap-4">
+                           <div className="p-4 bg-purple-500/20 text-purple-400 rounded-full group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(168,85,247,0.2)]">
                               <Icons.Sparkles />
                            </div>
                            <div className="text-left">
-                              <div className="font-bold text-slate-200 text-center">模型生成</div>
-                              <div className="text-[10px] text-slate-500 text-center">艺术渲染 · 沉浸式 · 概念图</div>
+                              <div className="font-bold text-slate-200 text-center text-lg">AI 场景生成</div>
+                              <div className="text-xs text-slate-500 text-center mt-1">
+                                 Imagen 3 · 艺术渲染 · 概念图
+                              </div>
                            </div>
                         </div>
                      </button>
@@ -369,8 +605,8 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
               </div>
            )}
 
-           {/* Loading State for Image Generation - Enhanced with Logs and Animations */}
-           {simState.isImageLoading && (
+           {/* LAYER 4: LOADING SPINNER (Only for AI Image) */}
+           {simState.isImageLoading && visualStyle === 'ARTISTIC' && (
               <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm p-8">
                  <div className="relative mb-6">
                     <div className="w-20 h-20 border-2 border-white/10 border-t-indigo-400 rounded-full animate-spin"></div>
@@ -378,33 +614,8 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                        <div className="w-10 h-10 bg-indigo-500/20 rounded-full animate-pulse"></div>
                     </div>
                  </div>
-                 
                  <div className="text-center space-y-2 max-w-xs w-full">
                     <p className="text-xs font-bold tracking-widest text-white uppercase animate-pulse">Rendering Scene</p>
-                    
-                    {/* Mini Log Console in Image Loader */}
-                    <div className="h-16 overflow-hidden text-[10px] font-mono text-indigo-300/80 text-left w-full border-l border-indigo-500/30 pl-3">
-                        {loadingLogs.slice(-3).map((log, i) => (
-                            <div key={i} className="truncate animate-fade-in-up">{log}</div>
-                        ))}
-                    </div>
-                 </div>
-
-                 {/* Background Particles */}
-                 <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                   {[...Array(15)].map((_, i) => (
-                      <div 
-                         key={i}
-                         className="absolute bg-indigo-400/40 rounded-full animate-float"
-                         style={{
-                            top: `${Math.random() * 100}%`,
-                            left: `${Math.random() * 100}%`,
-                            width: '2px',
-                            height: '2px',
-                            animationDuration: `${Math.random() * 2 + 1}s`
-                         }}
-                      />
-                   ))}
                  </div>
               </div>
            )}
@@ -414,7 +625,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
            </div>
         </div>
 
-        {/* Narrative & Controls */}
+        {/* Narrative & Controls (Right Side) */}
         <div className="w-full md:w-1/2 flex flex-col flex-1 min-h-0 bg-dark relative overflow-hidden">
            
            {/* Chat History */}
@@ -470,7 +681,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                     type="text"
                     value={customInput}
                     onChange={(e) => setCustomInput(e.target.value)}
-                    placeholder={simState.waitingForVisualChoice ? "请先选择视觉模式..." : "输入你的行动..."}
+                    placeholder={simState.waitingForVisualChoice ? "请先选择视觉引擎..." : "输入你的行动..."}
                     className="flex-1 bg-transparent px-4 py-3 text-white placeholder-slate-500 focus:outline-none text-sm disabled:cursor-not-allowed disabled:opacity-50"
                     disabled={simState.isLoading || simState.waitingForVisualChoice}
                   />
@@ -493,8 +704,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
       {showReportModal && simState.report && (
          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md animate-fade-in p-4">
             <div className="bg-surface border border-white/10 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl relative animate-scale-in flex flex-col max-h-[90vh]">
-               
-               {/* Decorative Header */}
+               {/* Same Result Modal Content as before */}
                <div className="bg-gradient-to-r from-indigo-500/20 to-purple-500/20 p-6 border-b border-white/5 flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-3">
                      <div className="p-2 bg-indigo-500 rounded-lg shadow-lg shadow-indigo-500/30">
@@ -511,10 +721,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                      </svg>
                   </button>
                </div>
-
-               {/* Scrollable Content */}
                <div className="p-6 overflow-y-auto space-y-6 custom-scrollbar">
-                   {/* Score Section */}
                    <div className="flex items-center justify-center py-4">
                       <div className="relative">
                          <svg className="w-32 h-32 -rotate-90">
@@ -536,14 +743,10 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                          </div>
                       </div>
                    </div>
-
-                   {/* Evaluation */}
                    <div className="bg-white/5 rounded-xl p-4 border border-white/5">
                       <h4 className="text-xs font-bold text-slate-400 uppercase mb-2">综合评价</h4>
                       <p className="text-sm text-slate-200 leading-relaxed">{simState.report.evaluation}</p>
                    </div>
-
-                   {/* Details Grid */}
                    <div className="grid grid-cols-1 gap-4">
                       <div>
                          <h4 className="text-xs font-bold text-indigo-400 uppercase mb-2">关键收获</h4>
@@ -561,8 +764,6 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                       </div>
                    </div>
                </div>
-               
-               {/* Footer Actions */}
                <div className="p-4 border-t border-white/10 bg-dark/50 shrink-0 flex gap-3">
                   <button onClick={() => setShowReportModal(false)} className="flex-1 py-2 rounded-lg border border-white/10 hover:bg-white/5 text-slate-300 text-sm transition-colors">
                      查看最终场景
@@ -571,7 +772,6 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                      返回主页
                   </button>
                </div>
-
             </div>
          </div>
       )}
