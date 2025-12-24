@@ -11,8 +11,31 @@ export enum SimulationType {
   HISTORY = 'HISTORY',
   CHEMISTRY = 'CHEMISTRY',
   PHYSICS = 'PHYSICS',
+  LITERATURE = 'LITERATURE',
   CODING = 'CODING',
   CUSTOM = 'CUSTOM'
+}
+
+// --- 3D Scene Configuration Types ---
+export type SceneObjectType = 'BEAKER' | 'FLASK' | 'SPHERE' | 'CUBE' | 'PLANE' | 'CYLINDER';
+
+export interface SceneObjectConfig {
+  id: string;
+  type: SceneObjectType;
+  position: [number, number, number];
+  scale?: [number, number, number];
+  color?: string; // Hex string
+  label?: string; // Floating text
+  liquidColor?: string; // Only for containers
+  liquidLevel?: number; // 0 to 1
+  roughness?: number;
+  metalness?: number;
+}
+
+export interface SceneConfig {
+  objects: SceneObjectConfig[];
+  lightingColor?: string;
+  environment?: 'LAB' | 'SPACE' | 'DEFAULT';
 }
 
 export interface AnalysisReport {
@@ -29,9 +52,11 @@ export interface SimulationState {
   history: { role: 'user' | 'model'; text: string }[];
   isLoading: boolean;
   isImageLoading: boolean;
-  waitingForVisualChoice: boolean; // New field for UI flow control
+  waitingForVisualChoice: boolean;
   isEnded: boolean;
   report?: AnalysisReport | null;
+  // New: Store the current 3D configuration
+  sceneConfig?: SceneConfig | null;
 }
 
 export interface ChatMessage {
@@ -42,10 +67,10 @@ export interface ChatMessage {
 }
 
 export enum DebatePersona {
-  SKEPTIC = 'SKEPTIC', // Challenges everything
-  OPTIMIST = 'OPTIMIST', // Supports blindly
-  COLLABORATOR = 'COLLABORATOR', // Constructive teammate
-  SOCRATIC = 'SOCRATIC' // Asks questions to guide
+  SKEPTIC = 'SKEPTIC', 
+  OPTIMIST = 'OPTIMIST', 
+  COLLABORATOR = 'COLLABORATOR', 
+  SOCRATIC = 'SOCRATIC' 
 }
 
 export interface DebateConfig {
@@ -62,27 +87,22 @@ export interface SavedRecord {
   transcript: { role: 'user' | 'model'; text: string }[];
 }
 
-// --- Interactive Story Types ---
-
 export interface StoryInteractable {
   id: string;
-  label: string; // The text shown when hovered
+  label: string; 
   type: 'EXAMINE' | 'PICKUP' | 'TRANSITION';
-  description: string; // What happens when clicked (short prompt context)
+  description: string; 
 }
 
 export interface StorySceneState {
-  narrative: string; // The story text
-  visualPrompt: string; // Used to generate the BG
+  narrative: string; 
+  visualPrompt: string; 
   interactables: StoryInteractable[];
-  inventory: string[]; // Items collected
+  inventory: string[]; 
   bgImage: string | null;
-  
-  // New Fields for Character
-  userRole: string; // e.g. "Detective", "Space Marine"
-  characterImage: string | null; // Base64 of the portrait
-
-  history: string[]; // Narrative history for context
+  userRole: string; 
+  characterImage: string | null; 
+  history: string[]; 
   isLoading: boolean;
   isImageLoading: boolean;
 }

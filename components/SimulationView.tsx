@@ -1,13 +1,17 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { generateSimulationTurn, generateSimulationImage } from '../services/geminiService';
-import { SimulationType, SimulationState, SavedRecord } from '../types';
+import { generateSimulationTurn, generateSimulationImage, generateSceneConfiguration } from '../services/geminiService';
+import { SimulationType, SimulationState, SavedRecord, SceneConfig } from '../types';
 import { Icons } from '../constants';
-import Matter from 'matter-js';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 
 interface SimulationViewProps {
   type: SimulationType;
-  customTopic?: string;
+  title: string;          
+  initialContext: string; 
   onExit: () => void;
   onSaveRecord: (record: SavedRecord) => void;
 }
@@ -16,209 +20,247 @@ const TYPE_LABELS = {
   [SimulationType.HISTORY]: "历史",
   [SimulationType.CHEMISTRY]: "化学",
   [SimulationType.PHYSICS]: "物理",
+  [SimulationType.LITERATURE]: "文学",
   [SimulationType.CODING]: "编程",
   [SimulationType.CUSTOM]: "自定义"
 };
 
-// --- Context-Aware Physics Engine ---
-const PhysicsCanvas = React.memo(({ type, description, topic }: { type: SimulationType, description: string, topic?: string }) => {
-  const boxRef = useRef<HTMLDivElement>(null);
-  const engineRef = useRef<Matter.Engine | null>(null);
-  const renderRef = useRef<Matter.Render | null>(null);
-  const runnerRef = useRef<Matter.Runner | null>(null);
+// --- Config-Driven 3D Simulation Engine ---
+const ThreeSimulationCanvas = React.memo(({ config }: { config: SceneConfig | null | undefined }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const labelRendererRef = useRef<CSS2DRenderer | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const frameIdRef = useRef<number>(0);
+  const objectsMapRef = useRef<Map<string, THREE.Object3D>>(new Map());
 
-  // Initialize World
+  // Initialize Three.js Scene
   useEffect(() => {
-      if (!boxRef.current) return;
+    if (!containerRef.current) return;
 
-      // Module Aliases
-      const Engine = Matter.Engine,
-            Render = Matter.Render,
-            Runner = Matter.Runner,
-            World = Matter.World,
-            Bodies = Matter.Bodies,
-            Mouse = Matter.Mouse,
-            MouseConstraint = Matter.MouseConstraint;
+    // 1. Scene & Camera Setup
+    const width = containerRef.current.clientWidth;
+    const height = containerRef.current.clientHeight;
 
-      // Clean up previous instance if exists (safety check)
-      if (engineRef.current) {
-        World.clear(engineRef.current.world, false);
-        Engine.clear(engineRef.current);
+    const scene = new THREE.Scene();
+    sceneRef.current = scene;
+
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+    camera.position.set(0, 3, 8); 
+    cameraRef.current = camera;
+
+    // 2. Renderer (WebGL)
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    containerRef.current.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
+
+    // 2b. Label Renderer (CSS2D)
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.setSize(width, height);
+    labelRenderer.domElement.style.position = 'absolute';
+    labelRenderer.domElement.style.top = '0px';
+    labelRenderer.domElement.style.pointerEvents = 'none'; // Click through to canvas
+    containerRef.current.appendChild(labelRenderer.domElement);
+    labelRendererRef.current = labelRenderer;
+
+    // 3. Environment & Lighting
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+    dirLight.position.set(5, 10, 5);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+
+    // 4. Controls
+    const controls = new OrbitControls(camera, renderer.domElement);
+    // Allow controls to work through the label layer if we hadn't set pointer-events: none
+    // But since label renderer is none, events go to webgl canvas which handles controls.
+    controls.enableDamping = true;
+    controls.target.set(0, 0.5, 0);
+    controlsRef.current = controls;
+
+    // 5. Initial Render
+    if (config) {
+        renderSceneFromConfig(scene, config);
+    }
+
+    // 6. Animation Loop
+    const animate = () => {
+      frameIdRef.current = requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
+    };
+    animate();
+
+    const handleResize = () => {
+       if (!containerRef.current || !rendererRef.current || !cameraRef.current || !labelRendererRef.current) return;
+       const w = containerRef.current.clientWidth;
+       const h = containerRef.current.clientHeight;
+       cameraRef.current.aspect = w / h;
+       cameraRef.current.updateProjectionMatrix();
+       rendererRef.current.setSize(w, h);
+       labelRendererRef.current.setSize(w, h);
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(frameIdRef.current);
+      if (rendererRef.current && containerRef.current) {
+         containerRef.current.removeChild(rendererRef.current.domElement);
+         rendererRef.current.dispose();
       }
-
-      const engine = Engine.create();
-      engineRef.current = engine;
-
-      const width = boxRef.current.clientWidth;
-      const height = boxRef.current.clientHeight;
-
-      const render = Render.create({
-          element: boxRef.current,
-          engine: engine,
-          options: {
-              width,
-              height,
-              background: '#0f172a',
-              wireframes: false, // Solid shapes
-              pixelRatio: window.devicePixelRatio
-          }
-      });
-      renderRef.current = render;
-
-      // Walls
-      const wallOptions = { isStatic: true, render: { fillStyle: '#1e293b' } };
-      World.add(engine.world, [
-          Bodies.rectangle(width / 2, height + 30, width, 60, wallOptions), // Ground
-          Bodies.rectangle(width / 2, -30, width, 60, wallOptions), // Ceiling
-          Bodies.rectangle(width + 30, height / 2, 60, height, wallOptions), // Right
-          Bodies.rectangle(-30, height / 2, 60, height, wallOptions) // Left
-      ]);
-
-      // --- Contextual Initialization ---
-      const combinedText = (description + " " + (topic || "")).toLowerCase();
-      
-      if (type === SimulationType.CHEMISTRY) {
-           engine.gravity.y = 0; // Microgravity for molecules
-           engine.gravity.scale = 0;
-           
-           // Determine molecule type/color based on text
-           let color = '#6366f1'; // Default Indigo
-           if (combinedText.includes('acid') || combinedText.includes('red') || combinedText.includes('fire')) color = '#ef4444'; // Red
-           else if (combinedText.includes('base') || combinedText.includes('blue') || combinedText.includes('water')) color = '#3b82f6'; // Blue
-           else if (combinedText.includes('gas') || combinedText.includes('steam')) color = '#cbd5e1'; // White/Grey
-
-           const particles = [];
-           const count = combinedText.includes('explosion') || combinedText.includes('fast') ? 60 : 30;
-           const speed = combinedText.includes('heat') || combinedText.includes('hot') ? 15 : 5;
-
-           for(let i=0; i<count; i++) {
-               const r = 6 + Math.random() * 8;
-               const particle = Bodies.circle(
-                   Math.random() * (width - 100) + 50, 
-                   Math.random() * (height - 100) + 50, 
-                   r, 
-                   { 
-                       restitution: 0.9, 
-                       frictionAir: 0.005,
-                       render: { fillStyle: color, opacity: 0.8 } 
-                   }
-               );
-               Matter.Body.setVelocity(particle, { 
-                   x: (Math.random()-0.5) * speed, 
-                   y: (Math.random()-0.5) * speed 
-               });
-               particles.push(particle);
-           }
-           World.add(engine.world, particles);
-
-      } else {
-           // PHYSICS
-           engine.gravity.y = 1;
-           engine.gravity.scale = 0.001; // Normal gravity
-
-           // Detect scenario
-           if (combinedText.includes('pendulum') || combinedText.includes('swing')) {
-               // Pendulum setup
-               const ball = Bodies.circle(width/2, height/2, 20, { density: 0.04, render: { fillStyle: '#f43f5e' } });
-               const anchor = { x: width/2, y: 100 };
-               const constraint = Matter.Constraint.create({
-                   pointA: anchor,
-                   bodyB: ball,
-                   stiffness: 0.9,
-                   length: 200,
-                   render: { strokeStyle: '#cbd5e1' }
-               });
-               World.add(engine.world, [ball, constraint]);
-           } 
-           else if (combinedText.includes('ramp') || combinedText.includes('slide') || combinedText.includes('incline')) {
-               // Ramp setup
-               const ramp = Bodies.rectangle(width/2, height - 150, 400, 20, { 
-                   isStatic: true, 
-                   angle: Math.PI * 0.15,
-                   render: { fillStyle: '#475569' }
-               });
-               const box = Bodies.rectangle(width/2 - 150, height - 300, 40, 40, { render: { fillStyle: '#facc15' } });
-               const circle = Bodies.circle(width/2 - 100, height - 300, 20, { render: { fillStyle: '#f43f5e' } });
-               World.add(engine.world, [ramp, box, circle]);
-           }
-           else {
-               // Default Stack (Gravity test)
-               const stack = Matter.Composites.stack(width/2 - 50, 100, 4, 4, 0, 0, (x, y) => {
-                   return Bodies.rectangle(x, y, 40, 40, { 
-                     render: { fillStyle: '#6366f1' },
-                     restitution: 0.6
-                   });
-               });
-               World.add(engine.world, stack);
-           }
+      if (labelRendererRef.current && containerRef.current) {
+         containerRef.current.removeChild(labelRendererRef.current.domElement);
       }
+      pmremGenerator.dispose();
+    };
+  }, []); 
 
-      // Mouse Interaction
-      const mouse = Mouse.create(render.canvas);
-      const mouseConstraint = MouseConstraint.create(engine, {
-          mouse: mouse,
-          constraint: { stiffness: 0.2, render: { visible: false } }
-      });
-      World.add(engine.world, mouseConstraint);
-      render.mouse = mouse;
-
-      // Start
-      Render.run(render);
-      const runner = Runner.create();
-      runnerRef.current = runner;
-      Runner.run(runner, engine);
-
-      return () => {
-          Render.stop(render);
-          Runner.stop(runner);
-          if (engineRef.current) {
-             World.clear(engineRef.current.world, false);
-             Engine.clear(engineRef.current);
-          }
-          if (render.canvas) render.canvas.remove();
-          renderRef.current = null;
-          runnerRef.current = null;
-          engineRef.current = null;
-      };
-  }, [type, topic]); // Re-init on fundamental type change
-
-  // Dynamic Updates based on Description Changes (User moves forward in simulation)
+  // Update scene when config changes
   useEffect(() => {
-      if (!engineRef.current) return;
-      const combinedText = description.toLowerCase();
-      const World = Matter.World;
-      const Bodies = Matter.Bodies;
-      const width = boxRef.current?.clientWidth || 800;
+    if (sceneRef.current && config) {
+        renderSceneFromConfig(sceneRef.current, config);
+    }
+  }, [config]);
 
-      // React to specific event keywords in the new turn
-      if (combinedText.includes('explode') || combinedText.includes('boom')) {
-          const bodies = Matter.Composite.allBodies(engineRef.current.world);
-          bodies.forEach(body => {
-              if (!body.isStatic) {
-                  Matter.Body.applyForce(body, body.position, { 
-                      x: (body.position.x - width/2) * 0.002, 
-                      y: (body.position.y - 300) * 0.002 
-                  });
-              }
-          });
-      }
-      
-      if (combinedText.includes('add') || combinedText.includes('appear') || combinedText.includes('drop')) {
-          // Spawn a new object
-          const newBody = Bodies.polygon(width/2 + (Math.random()-0.5)*100, 50, Math.floor(Math.random() * 5) + 3, 30, {
-              render: { fillStyle: '#ffffff' },
-              restitution: 0.6
-          });
-          World.add(engineRef.current.world, newBody);
-      }
 
-  }, [description]);
+  // --- ACCURATE Scene Rendering Logic ---
+  const renderSceneFromConfig = (scene: THREE.Scene, config: SceneConfig) => {
+    // Clear dynamic objects
+    const objectsToRemove: THREE.Object3D[] = [];
+    scene.traverse((child) => {
+        if (child.userData.isDynamic) objectsToRemove.push(child);
+    });
+    objectsToRemove.forEach(o => scene.remove(o));
+    objectsMapRef.current.clear();
 
-  return <div ref={boxRef} className="w-full h-full relative cursor-crosshair" />;
+    // Standard materials for color accuracy
+    const standardMat = (col: string = '#cccccc', transparent = false, opacity = 1.0) => new THREE.MeshStandardMaterial({ 
+        color: col, 
+        roughness: 0.5, 
+        metalness: 0.1,
+        transparent,
+        opacity
+    });
+
+    config.objects.forEach(obj => {
+        let mesh: THREE.Object3D | null = null;
+        const [x, y, z] = obj.position;
+        const [sx, sy, sz] = obj.scale || [1, 1, 1];
+        const color = obj.color || '#cccccc';
+
+        // Geometry Generation based on Type
+        if (obj.type === 'PLANE') {
+            const geo = new THREE.BoxGeometry(1, 1, 1); 
+            mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: '#1e293b', roughness: 0.9 }));
+            mesh.scale.set(sx, sy, sz);
+            mesh.receiveShadow = true;
+        } 
+        else if (obj.type === 'CUBE') {
+            mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), standardMat(color));
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+        }
+        else if (obj.type === 'SPHERE') {
+            mesh = new THREE.Mesh(new THREE.SphereGeometry(sx/2, 32, 32), standardMat(color));
+            mesh.castShadow = true;
+        }
+        else if (obj.type === 'CYLINDER') {
+            // New Type for Persons/Pillars
+            mesh = new THREE.Mesh(new THREE.CylinderGeometry(sx/2, sx/2, sy, 32), standardMat(color));
+            // Adjust cylinder origin to be center (ThreeJS cylinder origin is center, but often we want base)
+            // But since our coords are usually center based, this is fine.
+            mesh.castShadow = true;
+        }
+        else if (obj.type === 'BEAKER') {
+             const radius = sx * 0.8;
+             const height = sy * 2;
+             
+             // Simple Transparent Glass
+             const glassMat = standardMat('#ffffff', true, 0.3);
+             
+             const geo = new THREE.CylinderGeometry(radius, radius, height, 32, 1, true);
+             mesh = new THREE.Mesh(geo, glassMat);
+             
+             // Liquid
+             if ((obj.liquidLevel || 0) > 0.01) {
+                 const liqH = height * (obj.liquidLevel || 0.6);
+                 const liqRadius = radius - 0.05; 
+                 const liq = new THREE.Mesh(
+                     new THREE.CylinderGeometry(liqRadius, liqRadius, liqH, 32),
+                     standardMat(obj.liquidColor || '#3b82f6')
+                 );
+                 liq.position.y = -height/2 + liqH/2 + 0.05;
+                 mesh.add(liq);
+             }
+             mesh.castShadow = true;
+        }
+        else if (obj.type === 'FLASK') {
+             const radius = sx;
+             const meshGroup = new THREE.Group();
+             const glassMat = standardMat('#ffffff', true, 0.3);
+             
+             const body = new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 32), glassMat);
+             meshGroup.add(body);
+             
+             const neckH = sy * 1.5;
+             const neck = new THREE.Mesh(new THREE.CylinderGeometry(radius/3, radius/3, neckH, 32, 1, true), glassMat);
+             neck.position.y = radius + neckH/2 - 0.1;
+             meshGroup.add(neck);
+
+             if ((obj.liquidLevel || 0) > 0.01) {
+                 const liqRadius = radius - 0.05;
+                 const liq = new THREE.Mesh(
+                    new THREE.SphereGeometry(liqRadius, 32, 32, 0, Math.PI * 2, 0, Math.PI/2 + 0.2), 
+                    standardMat(obj.liquidColor || '#3b82f6')
+                 );
+                 liq.rotation.x = Math.PI; 
+                 meshGroup.add(liq);
+             }
+             mesh = meshGroup;
+             mesh.castShadow = true;
+        }
+
+        if (mesh) {
+            mesh.position.set(x, y, z);
+            mesh.userData.isDynamic = true;
+
+            // --- FLOATING LABEL (ACCURACY BOOSTER) ---
+            if (obj.label) {
+                const div = document.createElement('div');
+                div.className = 'px-2 py-1 bg-black/60 backdrop-blur-sm text-white text-[10px] rounded border border-white/20 shadow pointer-events-none whitespace-nowrap';
+                div.textContent = obj.label;
+                const labelObj = new CSS2DObject(div);
+                // Position label slightly above the object
+                labelObj.position.set(0, (sy/2) + 0.5, 0); 
+                // Special case for spheres/flask which might be centered differently
+                if(obj.type === 'SPHERE' || obj.type === 'FLASK') labelObj.position.set(0, (sx/2) + 0.5, 0);
+                
+                mesh.add(labelObj);
+            }
+
+            scene.add(mesh);
+            objectsMapRef.current.set(obj.id, mesh);
+        }
+    });
+  };
+
+  return <div ref={containerRef} className="w-full h-full relative cursor-move bg-gradient-to-b from-slate-900 to-slate-950" />;
 });
 
 
-// Extracted and Memoized Particle Component
 const ParticleBackground = React.memo(() => {
   const particles = useMemo(() => {
     return Array.from({ length: 60 }).map((_, i) => ({
@@ -254,17 +296,18 @@ const ParticleBackground = React.memo(() => {
   );
 });
 
-const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onExit, onSaveRecord }) => {
+const SimulationView: React.FC<SimulationViewProps> = ({ type, title, initialContext, onExit, onSaveRecord }) => {
   const [simState, setSimState] = useState<SimulationState>({
     description: "正在初始化模拟环境...",
     imageBase64: null,
     options: [],
     history: [],
     isLoading: true,
-    isImageLoading: true, // Only true when we are actually fetching something
+    isImageLoading: true, 
     waitingForVisualChoice: false,
     isEnded: false,
-    report: null
+    report: null,
+    sceneConfig: null 
   });
 
   const [visualStyle, setVisualStyle] = useState<'ARTISTIC' | 'SCHEMATIC' | null>(null);
@@ -276,7 +319,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
   const bottomRef = useRef<HTMLDivElement>(null);
   const reportSaved = useRef(false);
 
-  const isScientificMode = type === SimulationType.PHYSICS || type === SimulationType.CHEMISTRY;
+  const isScientificMode = type === SimulationType.PHYSICS || type === SimulationType.CHEMISTRY || type === SimulationType.HISTORY;
 
   const scrollToBottom = () => {
     setTimeout(() => {
@@ -309,12 +352,13 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
     initialized.current = true;
 
     const startSimulation = async () => {
-      const initialContext = customTopic;
-      
       try {
-        const turn = await generateSimulationTurn([], initialContext || "Start", "开始模拟，请描述初始场景");
+        // Parallel requests
+        const turnPromise = generateSimulationTurn([], initialContext || "Start", "开始模拟，请描述初始场景");
+        const scenePromise = isScientificMode ? generateSceneConfiguration(title, initialContext, null) : Promise.resolve(null);
+
+        const [turn, sceneConfig] = await Promise.all([turnPromise, scenePromise]);
         
-        // Update Text State ONLY first
         setSimState(prev => ({
           ...prev,
           description: turn.description,
@@ -323,19 +367,16 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
           isLoading: false,
           isEnded: turn.isEnded || false,
           report: turn.report,
-          // CRITICAL: Stop loading image by default. Wait for user.
           isImageLoading: false, 
-          waitingForVisualChoice: false
+          waitingForVisualChoice: false,
+          sceneConfig: sceneConfig 
         }));
         
         scrollToBottom();
 
-        // LOGIC BRANCH:
         if (isScientificMode) {
-          // Scientific: Pause and ask user.
           setSimState(prev => ({ ...prev, waitingForVisualChoice: true }));
         } else {
-          // History/Custom: Default to Artistic, but trigger load separate from initial render
           setVisualStyle('ARTISTIC');
           triggerImageGeneration(turn.description, 'ARTISTIC', turn.isEnded || false);
         }
@@ -353,22 +394,38 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
     };
 
     startSimulation();
-  }, [type, customTopic, isScientificMode]);
+  }, [type, initialContext, isScientificMode, title]);
 
   // --- 2. USER ACTION ---
   const handleAction = async (actionText: string) => {
     if (!actionText.trim() || simState.isLoading || simState.isEnded || simState.waitingForVisualChoice) return;
 
-    // Set text loading, keep visual state as is for now
     setSimState(prev => ({ ...prev, isLoading: true }));
     setCustomInput('');
 
     try {
       const newHistory: { role: 'user' | 'model'; text: string }[] = [...simState.history, { role: 'user', text: actionText }];
-      const context = customTopic || ""; 
+      const context = initialContext || ""; 
       
-      // Generate Text
       const turn = await generateSimulationTurn(newHistory, context, actionText);
+
+      // --- DYNAMIC SCENE UPDATE LOGIC ---
+      // Only generate new SceneConfig if the AI explicitly says visuals need updating
+      let newSceneConfig = simState.sceneConfig;
+      
+      if (isScientificMode) {
+         if (turn.shouldUpdateVisuals) {
+            console.log("Visual Update Triggered: Physical State Change Detected");
+            try {
+                // Pass the current config as previousState to ensure persistence
+                newSceneConfig = await generateSceneConfiguration(title, turn.description, simState.sceneConfig);
+            } catch(err) {
+                console.warn("Failed to update scene", err);
+            }
+         } else {
+            console.log("Skipping Visual Update: Dialogue/Logic only");
+         }
+      }
 
       setSimState(prev => ({
         ...prev,
@@ -377,17 +434,16 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
         history: [...newHistory, { role: 'model' as const, text: turn.description }],
         isLoading: false,
         isEnded: turn.isEnded,
-        report: turn.report
+        report: turn.report,
+        sceneConfig: newSceneConfig || prev.sceneConfig // Update or Keep Existing
       }));
       
       scrollToBottom();
 
-      // Handle Visual Update based on CURRENT style
-      if (visualStyle === 'ARTISTIC') {
+      // Only generate new Image if style is artistic and visuals changed (or it's the end)
+      if (visualStyle === 'ARTISTIC' && (turn.shouldUpdateVisuals || turn.isEnded)) {
           triggerImageGeneration(turn.description, 'ARTISTIC', turn.isEnded);
       } else if (visualStyle === 'SCHEMATIC') {
-          // For Schematic, we rely on the prop update passed to PhysicsCanvas
-          // We DO NOT trigger image generation.
           if (turn.isEnded) setTimeout(() => setShowReportModal(true), 1200);
       }
 
@@ -399,7 +455,6 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
 
   // --- 3. VISUAL LOGIC ---
   const triggerImageGeneration = async (description: string, style: 'ARTISTIC' | 'SCHEMATIC', isEnded: boolean) => {
-      // If we are in Schematic mode, abort AI image generation completely
       if (style === 'SCHEMATIC') return;
 
       setSimState(prev => ({ ...prev, isImageLoading: true, waitingForVisualChoice: false }));
@@ -419,11 +474,9 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
       setVisualStyle(style);
       
       if (style === 'ARTISTIC') {
-         // User chose AI Image: Start loading NOW.
          triggerImageGeneration(simState.description, style, simState.isEnded);
       } else {
-         // User chose Physics: Just update state to show canvas. 
-         // NO AI loading. PhysicsCanvas will mount immediately.
+         // Switch to 3D, we already have sceneConfig from init
          setSimState(prev => ({ ...prev, isImageLoading: false, waitingForVisualChoice: false }));
       }
   };
@@ -441,16 +494,16 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
          id: Date.now().toString(),
          timestamp: Date.now(),
          type,
-         topic: customTopic || simState.history[0]?.text.substring(0, 50) || "Unknown Simulation",
+         topic: title || simState.history[0]?.text.substring(0, 50) || "Unknown Simulation",
          report: simState.report,
          transcript: simState.history
        };
        onSaveRecord(record);
     }
-  }, [simState.isEnded, simState.report, type, customTopic, simState.history, onSaveRecord]);
+  }, [simState.isEnded, simState.report, type, title, simState.history, onSaveRecord]);
 
 
-  // --- Initial Full Screen Loader ---
+  // --- Initial Full Screen Loader (unchanged) ---
   if (simState.isLoading && simState.history.length === 0) {
       return (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden bg-[#020617] text-slate-200 font-mono">
@@ -492,13 +545,12 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
             </svg>
            </button>
            <div className="flex items-center gap-2">
-             <h2 className="text-lg font-bold text-white">
-               {TYPE_LABELS[type]} 模拟
+             <h2 className="text-lg font-bold text-white max-w-[200px] md:max-w-md truncate">
+               {title || TYPE_LABELS[type]}
              </h2>
-             {/* Show current style indicator if set */}
              {visualStyle === 'SCHEMATIC' && (
-                <span className="px-2 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                   仿真引擎: {type === SimulationType.CHEMISTRY ? '分子动力学' : '刚体物理'}
+                <span className="hidden md:inline-block px-2 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-300 border border-blue-500/30 whitespace-nowrap">
+                   3D 引擎: Three.js (WebGL)
                 </span>
              )}
            </div>
@@ -515,18 +567,19 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
         {/* Visual Viewport */}
         <div className="w-full md:w-1/2 h-[35vh] md:h-full relative bg-black flex items-center justify-center overflow-hidden border-r border-white/5 shrink-0 group">
            
-           {/* LAYER 1: PHYSICS CANVAS (Context Aware) */}
+           {/* LAYER 1: THREE.JS CANVAS (Context Aware) */}
            {/* Only render if style is schematic and NOT waiting for choice */}
            {visualStyle === 'SCHEMATIC' && !simState.waitingForVisualChoice && (
               <div className="w-full h-full relative animate-fade-in">
-                 <PhysicsCanvas 
-                    type={type} 
-                    description={simState.description}
-                    topic={customTopic}
+                 <ThreeSimulationCanvas 
+                    config={simState.sceneConfig}
                  />
-                 <div className="absolute top-4 left-4 bg-black/60 backdrop-blur text-[10px] text-white/70 px-3 py-1.5 rounded-full border border-white/10 pointer-events-none select-none z-10">
+                 <div className="absolute top-4 left-4 bg-black/60 backdrop-blur text-[10px] text-white/70 px-3 py-1.5 rounded-full border border-white/10 pointer-events-none select-none z-10 max-w-[80%] truncate">
                      <span className="w-2 h-2 inline-block bg-green-500 rounded-full mr-2 animate-pulse"></span>
-                     Real-time Physics: Interactive
+                     Realtime 3D View
+                 </div>
+                 <div className="absolute bottom-4 right-4 bg-black/40 backdrop-blur text-[10px] text-slate-400 px-2 py-1 rounded border border-white/5 pointer-events-none">
+                     左键旋转 · 右键平移 · 滚轮缩放
                  </div>
               </div>
            )}
@@ -543,7 +596,6 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                     <div className="absolute inset-0 bg-gradient-to-t from-dark/80 via-transparent to-transparent md:bg-gradient-to-l md:from-dark/50" />
                 </div>
                ) : (
-                // Fallback while first image loads
                 <div className="absolute inset-0 bg-slate-900/50 flex flex-col items-center justify-center">
                     {!simState.isImageLoading && (
                         <div className="text-slate-600 flex flex-col items-center">
@@ -571,14 +623,12 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                         <div className="absolute inset-0 bg-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
                         <div className="relative z-10 flex flex-col items-center gap-4">
                            <div className="p-4 bg-blue-500/20 text-blue-400 rounded-full group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(59,130,246,0.2)]">
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-                              </svg>
+                              <Icons.Physics />
                            </div>
                            <div className="text-left">
-                              <div className="font-bold text-slate-200 text-center text-lg">实时物理仿真</div>
+                              <div className="font-bold text-slate-200 text-center text-lg">3D 实时仿真</div>
                               <div className="text-xs text-slate-500 text-center mt-1">
-                                 Matter.js 引擎 · 交互式 · {type === SimulationType.CHEMISTRY ? '粒子碰撞' : '刚体动力学'}
+                                 AI 生成场景布局 · Three.js 渲染
                               </div>
                            </div>
                         </div>
@@ -630,7 +680,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
            
            {/* Chat History */}
            <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 scroll-smooth">
-              {simState.history.slice(1).map((msg, idx) => (
+              {simState.history.map((msg, idx) => (
                 <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in-up`}>
                   <div className={`max-w-[90%] rounded-2xl p-4 shadow-sm transition-transform hover:scale-[1.01] ${
                     msg.role === 'user' 
@@ -739,7 +789,7 @@ const SimulationView: React.FC<SimulationViewProps> = ({ type, customTopic, onEx
                          </svg>
                          <div className="absolute inset-0 flex flex-col items-center justify-center">
                             <span className="text-3xl font-extrabold text-white">{simState.report.score}</span>
-                            <span className="text-[10px] uppercase text-slate-500 font-bold">Score</span>
+                            <span className="text-xs font-bold uppercase text-slate-500 font-bold">Score</span>
                          </div>
                       </div>
                    </div>
